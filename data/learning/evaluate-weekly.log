@@ -1,0 +1,30 @@
+2026-01-23T15:29:46 Running: node dist/evaluate-weekly.js --days 7 --minSamples 5 --minWinRate 0.5 --writeApproved
+{
+  "ran": false,
+  "reason": "threshold_not_met",
+  "lastRun": 1769145715076,
+  "daysSince": 0.01,
+  "tradesSinceLastRun": 0,
+  "minDays": 7,
+  "minTrades": 10
+}
+2026-01-23T15:29:51 Running: node dist/evaluate-weekly.js --days 7 --minSamples 5 --minWinRate 0.5
+{
+  "ran": false,
+  "reason": "threshold_not_met",
+  "lastRun": 1769145715076,
+  "daysSince": 0.01,
+  "tradesSinceLastRun": 0,
+  "minDays": 7,
+  "minTrades": 10
+}
+2026-01-23T16:44:47 Running: node dist/evaluate-weekly.js --days 0 --minSamples 0 --minWinRate 0.5
+{
+  "ran": false,
+  "reason": "threshold_not_met",
+  "lastRun": 1769145715076,
+  "daysSince": 0.06,
+  "tradesSinceLastRun": 0,
+  "minDays": 7,
+  "minTrades": 10
+}

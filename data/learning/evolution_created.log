@@ -1,0 +1,2 @@
+{"timestamp":"2026-01-26T23:51:21.082Z","event":"evolution_created","new_strategies":["experimental_v1","experimental_v2"],"production_version":"1.0.0","phase":"pre-training","current_regime":"RISK-ON","recent_trades_analyzed":0}
+{"timestamp":"2026-01-26T23:56:55.089Z","event":"evolution_created","new_strategies":["experimental_v3","experimental_v4"],"production_version":"1.0.0","phase":"pre-training","current_regime":"RISK-ON","recent_trades_analyzed":0}

@@ -1,0 +1,22 @@
+[
+  {
+    "id": "gen1-elite0",
+    "weights": {
+      "trend_structure": 39.882973764972135,
+      "order_blocks": 30.047519154805304,
+      "fvgs": 20,
+      "ema_alignment": 15.055547535824287,
+      "liquidity": 9.964374439809738,
+      "mtf_bonus": 35.09349177350257,
+      "rsi_penalty": 14.88439781982021
+    },
+    "fitness": 44.623406857372146,
+    "metrics": {
+      "winRate": 0.2990844354018311,
+      "profitFactor": 1.0886676480432969,
+      "maxDrawdown": 245.3048507111168,
+      "totalPnl": 11607.693585665547,
+      "totalTrades": 1966
+    }
+  }
+]

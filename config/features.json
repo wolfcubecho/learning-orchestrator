@@ -1,0 +1,38 @@
+{
+  "feature_extraction": {
+    "lookback_periods": {
+      "short": 20,
+      "medium": 50,
+      "long": 100,
+      "default": 200
+    },
+    "thresholds": {
+      "ob_near_percent": 5,
+      "ob_distance_max": 1,
+      "fvg_near_percent": 2,
+      "fvg_distance_max": 1,
+      "fvg_size_max": 0.5,
+      "ob_age_max": 100,
+      "rsi_overbought": 70,
+      "rsi_oversold": 30,
+      "mtf_trend_threshold": 0.5
+    },
+    "binning": {
+      "num_bins": 10,
+      "min_sample_size": 30
+    }
+  },
+  "ml_training": {
+    "min_sample_size": 30,
+    "min_confidence_trades": 100,
+    "confidence_scale": 1000
+  },
+  "trade_simulation": {
+    "atr_multiplier_sl": 2,
+    "atr_multiplier_tp1": 2,
+    "atr_multiplier_tp2": 3,
+    "atr_multiplier_tp3": 5,
+    "max_holding_periods": 100,
+    "position_size": 1000
+  }
+}

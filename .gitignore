@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+dist/
+
+# Environment file
+.env
+
+# ML results (runtime generated prediction files - too large for GitHub)
+data/ml-results/
+
+# Environment files
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,33 @@
+{
+  "model_id": "drf_20260128_183739",
+  "algorithm": "drf",
+  "accuracy": 0.7746601566397286,
+  "auc": 0.8572236979946124,
+  "logloss": 0.40794321310129333,
+  "features": [
+    "direction",
+    "smc_score",
+    "trend_direction",
+    "trend_strength",
+    "bos_direction",
+    "ob_distance",
+    "ob_count",
+    "ob_type",
+    "ob_age",
+    "fvg_count",
+    "fvg_distance",
+    "fvg_type",
+    "ema_aligned",
+    "ema_trend",
+    "rsi_value",
+    "rsi_state",
+    "atr_value",
+    "volatility",
+    "mtf_aligned",
+    "liquidity_near"
+  ],
+  "train_rows": 16907,
+  "test_rows": 4124,
+  "model_path": "C:\\Users\\caleb\\trading-stack\\mcp\\learning-orchestrator\\data\\models\\h2o\\DRF_model_python_1769589452376_1",
+  "timestamp": "2026-01-28T18:37:39.702058"
+}

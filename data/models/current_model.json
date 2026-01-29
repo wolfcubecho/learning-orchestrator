@@ -1,0 +1,16 @@
+{
+  "state": {
+    "modelId": "model_1769590016473",
+    "trainedAt": 1769590016473,
+    "tradesUsed": 59513,
+    "accuracy": 0,
+    "winRate": 0,
+    "version": 4
+  },
+  "stats": {
+    "trained": true,
+    "numFeatures": 32,
+    "minSampleSize": 30
+  },
+  "trainedAt": "2026-01-28T08:46:56.474Z"
+}

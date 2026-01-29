@@ -1,0 +1,2 @@
+{"timestamp":"2026-01-26T23:49:06.415Z","event":"evolution_skipped","reason":"Insufficient trades for evolution: 45/50 required"}
+{"timestamp":"2026-01-26T23:55:48.192Z","event":"evolution_skipped","reason":"Maximum experimental versions (3) already active"}

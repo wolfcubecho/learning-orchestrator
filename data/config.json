@@ -1,0 +1,71 @@
+{
+  "evolution": {
+    "triggers": {
+      "min_trades": 50,
+      "min_days": 7,
+      "max_days_without_evolution": 30
+    },
+    "max_experimental_versions": 10,
+    "min_trades_before_promotion": 50,
+    "min_win_rate_improvement": 0.05,
+    "min_profit_factor": 1.1,
+    "max_consecutive_failures": 3,
+    "regime_change_required": true
+  },
+  "phases": {
+    "pre_training": {
+      "live_trades_min": 0,
+      "live_trades_max": 20,
+      "backtest_weight": 0.9,
+      "live_weight": 0.1,
+      "min_trades_for_evolution": 100,
+      "evolution_frequency": "weekly",
+      "min_improvement": 0.15,
+      "backtest_period": "6_months",
+      "backtest_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+    },
+    "hybrid": {
+      "live_trades_min": 20,
+      "live_trades_max": 50,
+      "backtest_weight": 0.6,
+      "live_weight": 0.4,
+      "min_trades_for_evolution": 50,
+      "evolution_frequency": "weekly_or_20_trades",
+      "min_improvement": 0.10,
+      "backtest_period": "3_months",
+      "backtest_symbols": ["BTCUSDT", "ETHUSDT"]
+    },
+    "live_dominant": {
+      "live_trades_min": 50,
+      "live_trades_max": 200,
+      "backtest_weight": 0.2,
+      "live_weight": 0.8,
+      "min_trades_for_evolution": 50,
+      "evolution_frequency": "weekly_or_50_trades",
+      "min_improvement": 0.10,
+      "backtest_period": "regime_specific"
+    },
+    "mature": {
+      "live_trades_min": 200,
+      "backtest_weight": 0.1,
+      "live_weight": 0.9,
+      "min_trades_for_evolution": 100,
+      "evolution_frequency": "weekly_or_100_trades",
+      "min_improvement": 0.05,
+      "backtest_period": "rare_only"
+    }
+  },
+  "mutation_probabilities": {
+    "tune_winner": 0.60,
+    "explore_direction": 0.25,
+    "regime_specific": 0.10,
+    "hybrid_best": 0.05
+  },
+  "data_paths": {
+    "strategies": "data/strategies.json",
+    "trades": "data/trades",
+    "paper_trades": "data/paper-trades",
+    "evaluations": "data/evaluations",
+    "backtest_results": "data/backtest-results"
+  }
+}

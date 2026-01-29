@@ -1,0 +1,202 @@
+[
+  {
+    "id": "gen0-strat2",
+    "weights": {
+      "trend_structure": 40.3763124971907,
+      "order_blocks": 30,
+      "fvgs": 20,
+      "ema_alignment": 14.361990125363569,
+      "liquidity": 10,
+      "mtf_bonus": 35.736100780676416,
+      "rsi_penalty": 14.921277190889446
+    },
+    "fitness": 45.02398989500022,
+    "metrics": {
+      "winRate": 0.30111336032388664,
+      "profitFactor": 1.0993151827348253,
+      "maxDrawdown": 266.32603636611213,
+      "totalPnl": 13012.7151957244,
+      "totalTrades": 1976
+    }
+  },
+  {
+    "id": "base",
+    "weights": {
+      "trend_structure": 40,
+      "order_blocks": 30,
+      "fvgs": 20,
+      "ema_alignment": 15,
+      "liquidity": 10,
+      "mtf_bonus": 35,
+      "rsi_penalty": 15
+    },
+    "fitness": 44.392619216603194,
+    "metrics": {
+      "winRate": 0.29796954314720814,
+      "profitFactor": 1.0824612496904955,
+      "maxDrawdown": 266.3260363661119,
+      "totalPnl": 10821.601279682442,
+      "totalTrades": 1970
+    }
+  },
+  {
+    "id": "gen0-strat1",
+    "weights": {
+      "trend_structure": 40,
+      "order_blocks": 30.19412765049887,
+      "fvgs": 20,
+      "ema_alignment": 15,
+      "liquidity": 10,
+      "mtf_bonus": 35,
+      "rsi_penalty": 15
+    },
+    "fitness": 44.392619216603194,
+    "metrics": {
+      "winRate": 0.29796954314720814,
+      "profitFactor": 1.0824612496904955,
+      "maxDrawdown": 266.3260363661119,
+      "totalPnl": 10821.601279682442,
+      "totalTrades": 1970
+    }
+  },
+  {
+    "id": "gen0-strat3",
+    "weights": {
+      "trend_structure": 40,
+      "order_blocks": 30,
+      "fvgs": 20,
+      "ema_alignment": 15,
+      "liquidity": 10,
+      "mtf_bonus": 35,
+      "rsi_penalty": 15
+    },
+    "fitness": 44.392619216603194,
+    "metrics": {
+      "winRate": 0.29796954314720814,
+      "profitFactor": 1.0824612496904955,
+      "maxDrawdown": 266.3260363661119,
+      "totalPnl": 10821.601279682442,
+      "totalTrades": 1970
+    }
+  },
+  {
+    "id": "gen0-strat4",
+    "weights": {
+      "trend_structure": 39.3738939123425,
+      "order_blocks": 30,
+      "fvgs": 20,
+      "ema_alignment": 15.31409764516971,
+      "liquidity": 10.357250450601656,
+      "mtf_bonus": 34.970231406221245,
+      "rsi_penalty": 15
+    },
+    "fitness": 44.392619216603194,
+    "metrics": {
+      "winRate": 0.29796954314720814,
+      "profitFactor": 1.0824612496904955,
+      "maxDrawdown": 266.3260363661119,
+      "totalPnl": 10821.601279682442,
+      "totalTrades": 1970
+    }
+  },
+  {
+    "id": "gen0-strat6",
+    "weights": {
+      "trend_structure": 40,
+      "order_blocks": 30,
+      "fvgs": 20,
+      "ema_alignment": 15.418526168575672,
+      "liquidity": 10,
+      "mtf_bonus": 35,
+      "rsi_penalty": 15
+    },
+    "fitness": 44.392619216603194,
+    "metrics": {
+      "winRate": 0.29796954314720814,
+      "profitFactor": 1.0824612496904955,
+      "maxDrawdown": 266.3260363661119,
+      "totalPnl": 10821.601279682442,
+      "totalTrades": 1970
+    }
+  },
+  {
+    "id": "gen0-strat8",
+    "weights": {
+      "trend_structure": 40,
+      "order_blocks": 30.1055241197415,
+      "fvgs": 20,
+      "ema_alignment": 15.38939006318331,
+      "liquidity": 10,
+      "mtf_bonus": 35,
+      "rsi_penalty": 15
+    },
+    "fitness": 44.392619216603194,
+    "metrics": {
+      "winRate": 0.29796954314720814,
+      "profitFactor": 1.0824612496904955,
+      "maxDrawdown": 266.3260363661119,
+      "totalPnl": 10821.601279682442,
+      "totalTrades": 1970
+    }
+  },
+  {
+    "id": "gen0-strat9",
+    "weights": {
+      "trend_structure": 40,
+      "order_blocks": 30,
+      "fvgs": 20,
+      "ema_alignment": 15,
+      "liquidity": 10,
+      "mtf_bonus": 35,
+      "rsi_penalty": 15
+    },
+    "fitness": 44.392619216603194,
+    "metrics": {
+      "winRate": 0.29796954314720814,
+      "profitFactor": 1.0824612496904955,
+      "maxDrawdown": 266.3260363661119,
+      "totalPnl": 10821.601279682442,
+      "totalTrades": 1970
+    }
+  },
+  {
+    "id": "gen0-strat7",
+    "weights": {
+      "trend_structure": 39.410870355414254,
+      "order_blocks": 29.820846630277117,
+      "fvgs": 20.59641621701664,
+      "ema_alignment": 15.268894815292564,
+      "liquidity": 10,
+      "mtf_bonus": 35,
+      "rsi_penalty": 14.337736118541121
+    },
+    "fitness": 43.63661176879063,
+    "metrics": {
+      "winRate": 0.29465648854961835,
+      "profitFactor": 1.0616784075601966,
+      "maxDrawdown": 266.326036366112,
+      "totalPnl": 8103.560492724975,
+      "totalTrades": 1965
+    }
+  },
+  {
+    "id": "gen0-strat5",
+    "weights": {
+      "trend_structure": 40,
+      "order_blocks": 30,
+      "fvgs": 20,
+      "ema_alignment": 14.479656777624186,
+      "liquidity": 9.893558389548394,
+      "mtf_bonus": 35,
+      "rsi_penalty": 15
+    },
+    "fitness": 43.476198876450084,
+    "metrics": {
+      "winRate": 0.2925831202046036,
+      "profitFactor": 1.0590958022755315,
+      "maxDrawdown": 268.76670999372925,
+      "totalPnl": 7757.839885570406,
+      "totalTrades": 1955
+    }
+  }
+]
