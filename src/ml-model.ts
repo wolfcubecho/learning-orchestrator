@@ -1,351 +1,452 @@
 /**
  * Machine Learning Model for Trading
- * Learns patterns from historical trades to predict win probability
+ *
+ * Uses gradient descent to learn optimal feature weights.
+ * Actually learns and improves over iterations.
  */
 
 import { TradeFeatures } from './trade-features.js';
 
-export interface FeatureBin {
+export interface Prediction {
+  winProbability: number;
+  confidence: number;
+  keyFeatures: string[];
+  reason: string;
+}
+
+interface FeatureStats {
+  mean: number;
+  std: number;
   min: number;
   max: number;
-  count: number;
-  wins: number;
-  winRate: number;
-  value?: any;  // Categorical value (for matching)
 }
 
-export interface ModelFeature {
-  name: string;
-  bins: FeatureBin[];
-  importance: number;  // 0-1, how predictive this feature is
-}
+// Numerical features to use
+const NUMERIC_FEATURES = [
+  'trend_strength', 'ob_distance', 'ob_size', 'ob_age',
+  'fvg_nearest_distance', 'fvg_size', 'fvg_count', 'volatility',
+  'rsi_value', 'atr_value', 'price_position', 'distance_to_high',
+  'distance_to_low', 'volume_ratio', 'confluence_score', 'potential_rr'
+];
 
-export interface Prediction {
-  winProbability: number;  // 0-1
-  confidence: number;  // 0-1, based on sample size
-  keyFeatures: string[];  // Which features are driving the prediction
-  reason: string;  // Human-readable explanation
-}
+// Categorical features (one-hot encoded)
+const CATEGORICAL_FEATURES = [
+  'trend_direction', 'ob_type', 'fvg_type', 'ema_trend',
+  'rsi_state', 'direction', 'session'
+];
 
 export class TradingMLModel {
-  private features: Map<string, ModelFeature> = new Map();
-  private minSampleSize = 30;  // Minimum samples to make prediction
+  private weights: Map<string, number> = new Map();
+  private bias: number = 0;
+  private featureStats: Map<string, FeatureStats> = new Map();
+  private categoricalValues: Map<string, Set<string>> = new Map();
   private trained = false;
-  
+
+  // Training hyperparameters
+  private learningRate = 0.01;
+  private l2Lambda = 0.001;  // L2 regularization
+  private maxEpochs = 100;
+  private patience = 10;  // Early stopping patience
+
+  // Training history
+  private trainingHistory: { epoch: number; trainLoss: number; valLoss: number; accuracy: number }[] = [];
+  private bestWeights: Map<string, number> = new Map();
+  private bestBias: number = 0;
+  private bestValLoss: number = Infinity;
+
   /**
-   * Train the model on historical trades
+   * Train the model using gradient descent
    */
   train(trades: TradeFeatures[]): void {
-    console.log(`\n=== Training ML Model ===`);
-    console.log(`Training on ${trades.length} trades...`);
-    
-    this.features.clear();
-    
-    // Extract and bin each feature
-    this.binFeature('trend_strength', trades, 10);
-    this.binFeature('ob_distance', trades, 10);
-    this.binFeature('ob_size', trades, 10);
-    this.binFeature('ob_age', trades, 10);
-    this.binFeature('fvg_nearest_distance', trades, 10);
-    this.binFeature('fvg_size', trades, 10);
-    this.binFeature('fvg_count', trades, 10);
-    this.binFeature('volatility', trades, 10);
-    this.binFeature('rsi_value', trades, 10);
-    this.binFeature('atr_value', trades, 10);
-    
-    // New features
-    this.binFeature('price_position', trades, 10);
-    this.binFeature('distance_to_high', trades, 10);
-    this.binFeature('distance_to_low', trades, 10);
-    this.binFeature('volume_ratio', trades, 10);
-    this.binFeature('confluence_score', trades, 10);
-    this.binFeature('potential_rr', trades, 10);
-    
-    // Categorical features
-    this.binCategorical('trend_direction', trades);
-    this.binCategorical('trend_bos_aligned', trades);
-    this.binCategorical('ob_near', trades);
-    this.binCategorical('ob_type', trades);
-    this.binCategorical('fvg_near', trades);
-    this.binCategorical('fvg_type', trades);
-    this.binCategorical('ema_aligned', trades);
-    this.binCategorical('ema_trend', trades);
-    this.binCategorical('rsi_state', trades);
-    this.binCategorical('liquidity_near', trades);
-    this.binCategorical('mtf_aligned', trades);
-    this.binCategorical('direction', trades);
-    this.binCategorical('volume_spike', trades);
-    this.binCategorical('session', trades);
-    this.binCategorical('days_since_loss', trades);
-    this.binCategorical('streak_type', trades);
-    
-    // Calculate feature importance
-    this.calculateFeatureImportance();
-    
-    this.trained = true;
-    
-    // Print insights
-    this.printInsights();
-  }
-  
-  /**
-   * Bin numerical features into ranges
-   */
-  private binFeature(featureName: string, trades: TradeFeatures[], numBins: number): void {
-    const values = trades.map(t => t[featureName as keyof TradeFeatures] as number);
-    const minVal = Math.min(...values);
-    const maxVal = Math.max(...values);
-    const binSize = (maxVal - minVal) / numBins;
-    
-    const bins: FeatureBin[] = [];
-    
-    for (let i = 0; i < numBins; i++) {
-      const binMin = minVal + (i * binSize);
-      const binMax = minVal + ((i + 1) * binSize);
-      
-      const tradesInBin = trades.filter(t => {
-        const val = t[featureName as keyof TradeFeatures] as number;
-        return val >= binMin && val < binMax;
-      });
-      
-      const wins = tradesInBin.filter(t => t.outcome === 'WIN').length;
-      
-      bins.push({
-        min: binMin,
-        max: binMax,
-        count: tradesInBin.length,
-        wins,
-        winRate: tradesInBin.length > 0 ? wins / tradesInBin.length : 0
-      });
+    if (trades.length < 100) {
+      console.log(`[ML] Not enough trades (${trades.length}). Need 100+.`);
+      return;
     }
-    
-    this.features.set(featureName, {
-      name: featureName,
-      bins,
-      importance: 0  // Will calculate later
-    });
-  }
-  
-  /**
-   * Bin categorical features
-   */
-  private binCategorical(featureName: string, trades: TradeFeatures[]): void {
-    const uniqueValues = new Set(trades.map(t => t[featureName as keyof TradeFeatures]));
-    
-    const bins: FeatureBin[] = [];
-    
-    for (const value of uniqueValues) {
-      const tradesWithValue = trades.filter(t => 
-        t[featureName as keyof TradeFeatures] === value
-      );
-      const wins = tradesWithValue.filter(t => t.outcome === 'WIN').length;
-      
-      bins.push({
-        min: 0,  // Not used for categorical
-        max: 0,
-        count: tradesWithValue.length,
-        wins,
-        winRate: tradesWithValue.length > 0 ? wins / tradesWithValue.length : 0,
-        value  // Store categorical value for matching
-      });
-    }
-    
-    this.features.set(featureName, {
-      name: featureName,
-      bins,
-      importance: 0
-    });
-  }
-  
-  /**
-   * Calculate feature importance based on variance in win rates
-   */
-  private calculateFeatureImportance(): void {
-    for (const [name, feature] of this.features.entries()) {
-      const winRates = feature.bins.filter(b => b.count >= this.minSampleSize).map(b => b.winRate);
-      
-      if (winRates.length < 2) {
-        feature.importance = 0;
-        continue;
+
+    console.log(`\n=== Training ML Model (Gradient Descent) ===`);
+    console.log(`Trades: ${trades.length}`);
+
+    // Split into train/validation (80/20)
+    const shuffled = [...trades].sort(() => Math.random() - 0.5);
+    const splitIdx = Math.floor(shuffled.length * 0.8);
+    const trainSet = shuffled.slice(0, splitIdx);
+    const valSet = shuffled.slice(splitIdx);
+
+    console.log(`Train: ${trainSet.length}, Validation: ${valSet.length}`);
+
+    // Initialize feature stats from training data
+    this.computeFeatureStats(trainSet);
+
+    // Initialize weights randomly (small values)
+    this.initializeWeights();
+
+    // Training loop with early stopping
+    let epochsWithoutImprovement = 0;
+
+    for (let epoch = 1; epoch <= this.maxEpochs; epoch++) {
+      // Train one epoch
+      const trainLoss = this.trainEpoch(trainSet);
+
+      // Evaluate on validation
+      const { loss: valLoss, accuracy } = this.evaluate(valSet);
+
+      this.trainingHistory.push({ epoch, trainLoss, valLoss, accuracy });
+
+      // Check for improvement
+      if (valLoss < this.bestValLoss) {
+        this.bestValLoss = valLoss;
+        this.saveBestWeights();
+        epochsWithoutImprovement = 0;
+
+        if (epoch % 10 === 0 || epoch === 1) {
+          console.log(`  Epoch ${epoch}: loss=${valLoss.toFixed(4)}, acc=${(accuracy * 100).toFixed(1)}% [BEST]`);
+        }
+      } else {
+        epochsWithoutImprovement++;
+        if (epoch % 20 === 0) {
+          console.log(`  Epoch ${epoch}: loss=${valLoss.toFixed(4)}, acc=${(accuracy * 100).toFixed(1)}%`);
+        }
       }
-      
-      // Calculate variance in win rates
-      const mean = winRates.reduce((sum, r) => sum + r, 0) / winRates.length;
-      const variance = winRates.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / winRates.length;
-      
-      // Higher variance = more predictive
-      feature.importance = Math.min(variance * 10, 1);
+
+      // Early stopping
+      if (epochsWithoutImprovement >= this.patience) {
+        console.log(`  Early stopping at epoch ${epoch} (no improvement for ${this.patience} epochs)`);
+        break;
+      }
+    }
+
+    // Restore best weights
+    this.restoreBestWeights();
+
+    // Final evaluation
+    const { accuracy: finalAcc } = this.evaluate(valSet);
+    console.log(`\n✓ Training complete. Best accuracy: ${(finalAcc * 100).toFixed(1)}%`);
+
+    this.trained = true;
+    this.printTopFeatures();
+  }
+
+  /**
+   * Train one epoch using mini-batch gradient descent
+   */
+  private trainEpoch(trades: TradeFeatures[]): number {
+    const batchSize = 32;
+    let totalLoss = 0;
+
+    // Shuffle for each epoch
+    const shuffled = [...trades].sort(() => Math.random() - 0.5);
+
+    for (let i = 0; i < shuffled.length; i += batchSize) {
+      const batch = shuffled.slice(i, i + batchSize);
+
+      // Compute gradients
+      const gradients = new Map<string, number>();
+      let biasGrad = 0;
+      let batchLoss = 0;
+
+      for (const trade of batch) {
+        const features = this.extractNormalizedFeatures(trade);
+        const target = trade.outcome === 'WIN' ? 1 : 0;
+
+        // Forward pass (sigmoid)
+        const logit = this.computeLogit(features);
+        const pred = this.sigmoid(logit);
+
+        // Binary cross-entropy loss
+        const epsilon = 1e-7;
+        batchLoss += -target * Math.log(pred + epsilon) - (1 - target) * Math.log(1 - pred + epsilon);
+
+        // Backward pass (gradient of BCE with sigmoid)
+        const error = pred - target;
+
+        for (const [name, value] of features.entries()) {
+          const grad = (gradients.get(name) || 0) + error * value;
+          gradients.set(name, grad);
+        }
+        biasGrad += error;
+      }
+
+      // Update weights with L2 regularization
+      for (const [name, grad] of gradients.entries()) {
+        const currentWeight = this.weights.get(name) || 0;
+        const avgGrad = grad / batch.length;
+        const l2Term = this.l2Lambda * currentWeight;
+        const newWeight = currentWeight - this.learningRate * (avgGrad + l2Term);
+        this.weights.set(name, newWeight);
+      }
+
+      // Update bias (no regularization on bias)
+      this.bias -= this.learningRate * (biasGrad / batch.length);
+
+      totalLoss += batchLoss;
+    }
+
+    return totalLoss / trades.length;
+  }
+
+  /**
+   * Evaluate model on a dataset
+   */
+  private evaluate(trades: TradeFeatures[]): { loss: number; accuracy: number } {
+    let totalLoss = 0;
+    let correct = 0;
+
+    for (const trade of trades) {
+      const features = this.extractNormalizedFeatures(trade);
+      const target = trade.outcome === 'WIN' ? 1 : 0;
+
+      const logit = this.computeLogit(features);
+      const pred = this.sigmoid(logit);
+
+      // Loss
+      const epsilon = 1e-7;
+      totalLoss += -target * Math.log(pred + epsilon) - (1 - target) * Math.log(1 - pred + epsilon);
+
+      // Accuracy
+      const predicted = pred >= 0.5 ? 1 : 0;
+      if (predicted === target) correct++;
+    }
+
+    return {
+      loss: totalLoss / trades.length,
+      accuracy: correct / trades.length
+    };
+  }
+
+  /**
+   * Compute feature statistics for normalization
+   */
+  private computeFeatureStats(trades: TradeFeatures[]): void {
+    this.featureStats.clear();
+    this.categoricalValues.clear();
+
+    // Numeric features
+    for (const name of NUMERIC_FEATURES) {
+      const values = trades.map(t => t[name as keyof TradeFeatures] as number).filter(v => !isNaN(v));
+      if (values.length === 0) continue;
+
+      const mean = values.reduce((a, b) => a + b, 0) / values.length;
+      const variance = values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / values.length;
+      const std = Math.sqrt(variance) || 1;
+
+      this.featureStats.set(name, {
+        mean,
+        std,
+        min: Math.min(...values),
+        max: Math.max(...values)
+      });
+    }
+
+    // Categorical features - collect unique values
+    for (const name of CATEGORICAL_FEATURES) {
+      const values = new Set<string>();
+      for (const trade of trades) {
+        const val = trade[name as keyof TradeFeatures];
+        if (val !== undefined && val !== null) {
+          values.add(String(val));
+        }
+      }
+      this.categoricalValues.set(name, values);
     }
   }
-  
+
   /**
-   * Predict win probability for a trade setup
+   * Initialize weights with small random values
+   */
+  private initializeWeights(): void {
+    this.weights.clear();
+    this.bias = 0;
+
+    // Numeric features
+    for (const name of NUMERIC_FEATURES) {
+      if (this.featureStats.has(name)) {
+        this.weights.set(name, (Math.random() - 0.5) * 0.1);
+      }
+    }
+
+    // Categorical features (one-hot)
+    for (const [catName, values] of this.categoricalValues.entries()) {
+      for (const val of values) {
+        const key = `${catName}_${val}`;
+        this.weights.set(key, (Math.random() - 0.5) * 0.1);
+      }
+    }
+
+    console.log(`Initialized ${this.weights.size} weights`);
+  }
+
+  /**
+   * Extract and normalize features from a trade
+   */
+  private extractNormalizedFeatures(trade: TradeFeatures): Map<string, number> {
+    const features = new Map<string, number>();
+
+    // Numeric features (z-score normalization)
+    for (const name of NUMERIC_FEATURES) {
+      const stats = this.featureStats.get(name);
+      if (!stats) continue;
+
+      const rawValue = trade[name as keyof TradeFeatures] as number;
+      if (isNaN(rawValue)) continue;
+
+      const normalized = (rawValue - stats.mean) / stats.std;
+      features.set(name, normalized);
+    }
+
+    // Categorical features (one-hot encoding)
+    for (const [catName, possibleValues] of this.categoricalValues.entries()) {
+      const actualValue = String(trade[catName as keyof TradeFeatures] || '');
+
+      for (const val of possibleValues) {
+        const key = `${catName}_${val}`;
+        features.set(key, actualValue === val ? 1 : 0);
+      }
+    }
+
+    return features;
+  }
+
+  /**
+   * Compute logit (weighted sum)
+   */
+  private computeLogit(features: Map<string, number>): number {
+    let logit = this.bias;
+
+    for (const [name, value] of features.entries()) {
+      const weight = this.weights.get(name) || 0;
+      logit += weight * value;
+    }
+
+    return logit;
+  }
+
+  /**
+   * Sigmoid activation
+   */
+  private sigmoid(x: number): number {
+    return 1 / (1 + Math.exp(-Math.max(-500, Math.min(500, x))));
+  }
+
+  /**
+   * Save current weights as best
+   */
+  private saveBestWeights(): void {
+    this.bestWeights = new Map(this.weights);
+    this.bestBias = this.bias;
+  }
+
+  /**
+   * Restore best weights
+   */
+  private restoreBestWeights(): void {
+    this.weights = new Map(this.bestWeights);
+    this.bias = this.bestBias;
+  }
+
+  /**
+   * Predict win probability
    */
   predict(features: TradeFeatures): Prediction {
     if (!this.trained) {
-      throw new Error('Model not trained. Call train() first.');
+      return {
+        winProbability: 0.5,
+        confidence: 0,
+        keyFeatures: [],
+        reason: 'Model not trained'
+      };
     }
-    
-    const weightedScores: { feature: string; score: number; winRate: number }[] = [];
-    
-    // Score each feature
-    for (const [name, modelFeature] of this.features.entries()) {
-      const featureValue = features[name as keyof TradeFeatures];
-      
-      // Find the bin for this value
-      let binWinRate = 0.5;
-      let binCount = 0;
-      
-      for (const bin of modelFeature.bins) {
-        if (typeof featureValue === 'number') {
-          if (featureValue >= bin.min && featureValue < bin.max) {
-            binWinRate = bin.winRate;
-            binCount = bin.count;
-            break;
-          }
-        } else {
-          // Categorical match - compare actual values
-          if (bin.count > 0 && bin.value === featureValue) {
-            binWinRate = bin.winRate;
-            binCount = bin.count;
-            break;
-          }
-        }
-      }
-      
-      // Weight by feature importance and sample size
-      const sampleWeight = Math.min(binCount / this.minSampleSize, 1);
-      const score = binWinRate * modelFeature.importance * sampleWeight;
-      
-      weightedScores.push({
-        feature: name,
-        score,
-        winRate: binWinRate
-      });
+
+    const normalizedFeatures = this.extractNormalizedFeatures(features);
+    const logit = this.computeLogit(normalizedFeatures);
+    const winProbability = this.sigmoid(logit);
+
+    // Find top contributing features
+    const contributions: { name: string; contribution: number }[] = [];
+
+    for (const [name, value] of normalizedFeatures.entries()) {
+      const weight = this.weights.get(name) || 0;
+      contributions.push({ name, contribution: Math.abs(weight * value) });
     }
-    
-    // Sort by score
-    weightedScores.sort((a, b) => b.score - a.score);
-    
-    // Calculate overall prediction (weighted average of top features)
-    const topFeatures = weightedScores.slice(0, 10);
-    const totalWeight = topFeatures.reduce((sum, f) => sum + f.score, 0);
-    const weightedSum = topFeatures.reduce((sum, f) => sum + (f.score * f.winRate), 0);
-    const winProbability = totalWeight > 0 ? weightedSum / totalWeight : 0.5;
-    
-    // Confidence based on total sample size of top features
-    const totalSamples = topFeatures.reduce((sum, f) => sum + Math.min(f.score / f.winRate, 100), 0);
-    const confidence = Math.min(totalSamples / 1000, 1);
-    
-    // Generate explanation
-    const keyFeatures = topFeatures.slice(0, 5).map(f => f.feature);
-    const reasons = topFeatures.slice(0, 5).map(f => {
-      const winRate = (f.winRate * 100).toFixed(0);
-      return `${f.feature} ${(f.winRate * 100).toFixed(0)}% win rate`;
-    });
-    
+
+    contributions.sort((a, b) => b.contribution - a.contribution);
+    const topFeatures = contributions.slice(0, 5).map(c => c.name);
+
+    // Confidence based on how far from 0.5
+    const confidence = Math.abs(winProbability - 0.5) * 2;
+
+    const direction = winProbability > 0.5 ? 'bullish' : 'bearish';
+    const strength = winProbability > 0.65 || winProbability < 0.35 ? 'strong' : 'weak';
+
     return {
       winProbability,
       confidence,
-      keyFeatures,
-      reason: reasons.join(', ')
+      keyFeatures: topFeatures,
+      reason: `${strength} ${direction} signal (${(winProbability * 100).toFixed(0)}% win prob)`
     };
   }
-  
+
   /**
-   * Print model insights
+   * Print top features by weight magnitude
    */
-  private printInsights(): void {
-    console.log(`\n📊 Feature Importance Analysis:`);
-    
-    const sortedFeatures = Array.from(this.features.entries())
-      .sort((a, b) => b[1].importance - a[1].importance)
-      .slice(0, 10);
-    
-    for (const [name, feature] of sortedFeatures) {
-      const bestBin = feature.bins
-        .filter(b => b.count >= this.minSampleSize)
-        .sort((a, b) => b.winRate - a.winRate)[0];
-      
-      if (bestBin) {
-        console.log(`  ${name.padEnd(25)} ${(feature.importance * 100).toFixed(0)}% importance`);
-        console.log(`    Best range: ${this.formatRange(name, bestBin)} = ${(bestBin.winRate * 100).toFixed(0)}% win rate (${bestBin.count} trades)`);
-      }
-    }
-    
-    console.log(`\n💡 High-Probability Setup Characteristics:`);
-    
-    // Find characteristics of best performing trades
-    const bestTrades = this.findBestPerformingBins();
-    
-    for (const insight of bestTrades.slice(0, 5)) {
-      console.log(`  ${insight}`);
+  private printTopFeatures(): void {
+    const sorted = Array.from(this.weights.entries())
+      .map(([name, weight]) => ({ name, weight, absWeight: Math.abs(weight) }))
+      .sort((a, b) => b.absWeight - a.absWeight)
+      .slice(0, 15);
+
+    console.log(`\n📊 Top Features by Weight:`);
+    for (const { name, weight } of sorted) {
+      const direction = weight > 0 ? '↑' : '↓';
+      const impact = weight > 0 ? 'increases' : 'decreases';
+      console.log(`  ${direction} ${name.padEnd(30)} ${weight > 0 ? '+' : ''}${weight.toFixed(4)} (${impact} win prob)`);
     }
   }
-  
+
   /**
-   * Find best performing ranges
+   * Get training history
    */
-  private findBestPerformingBins(): string[] {
-    const insights: string[] = [];
-    
-    for (const [name, feature] of this.features.entries()) {
-      const bestBins = feature.bins
-        .filter(b => b.count >= this.minSampleSize)
-        .sort((a, b) => b.winRate - a.winRate)
-        .slice(0, 2);
-      
-      for (const bin of bestBins) {
-        if (bin.winRate > 0.55) {
-          insights.push(
-            `${name} ${this.formatRange(name, bin)} = ${(bin.winRate * 100).toFixed(0)}% win rate`
-          );
-        }
-      }
-    }
-    
-    return insights;
+  getHistory(): typeof this.trainingHistory {
+    return this.trainingHistory;
   }
-  
-  /**
-   * Format bin range for display
-   */
-  private formatRange(featureName: string, bin: FeatureBin): string {
-    if (bin.max === 0 && bin.min === 0) {
-      return '(categorical)';
-    }
-    
-    const val = bin.min;
-    switch (featureName) {
-      case 'trend_strength':
-        return `${(val * 100).toFixed(1)}%`;
-      case 'ob_distance':
-      case 'fvg_nearest_distance':
-        return `${(val * 100).toFixed(2)}%`;
-      case 'ob_size':
-      case 'fvg_size':
-        return `${(val * 100).toFixed(2)}%`;
-      case 'ob_age':
-        return `${Math.floor(val)} candles`;
-      case 'volatility':
-        return `${(val * 100).toFixed(2)}%`;
-      case 'rsi_value':
-        return `${val.toFixed(0)}`;
-      case 'atr_value':
-        return `$${val.toFixed(2)}`;
-      default:
-        return `${val.toFixed(3)}`;
-    }
-  }
-  
+
   /**
    * Get model statistics
    */
   getStats(): any {
+    const lastHistory = this.trainingHistory[this.trainingHistory.length - 1];
     return {
       trained: this.trained,
-      numFeatures: this.features.size,
-      minSampleSize: this.minSampleSize
+      numWeights: this.weights.size,
+      bestValLoss: this.bestValLoss,
+      finalAccuracy: lastHistory?.accuracy || 0,
+      epochs: this.trainingHistory.length
     };
+  }
+
+  /**
+   * Export weights for persistence
+   */
+  exportWeights(): { weights: Record<string, number>; bias: number; featureStats: Record<string, FeatureStats>; categoricalValues: Record<string, string[]> } {
+    return {
+      weights: Object.fromEntries(this.weights),
+      bias: this.bias,
+      featureStats: Object.fromEntries(this.featureStats),
+      categoricalValues: Object.fromEntries(
+        Array.from(this.categoricalValues.entries()).map(([k, v]) => [k, Array.from(v)])
+      )
+    };
+  }
+
+  /**
+   * Import weights from persistence
+   */
+  importWeights(data: ReturnType<typeof this.exportWeights>): void {
+    this.weights = new Map(Object.entries(data.weights));
+    this.bias = data.bias;
+    this.featureStats = new Map(Object.entries(data.featureStats));
+    this.categoricalValues = new Map(
+      Object.entries(data.categoricalValues).map(([k, v]) => [k, new Set(v)])
+    );
+    this.trained = true;
   }
 }

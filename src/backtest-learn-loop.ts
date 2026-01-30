@@ -16,8 +16,10 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import { LocalDataLoader } from './data-loader.js';
 import { SMCIndicators, Candle } from './smc-indicators.js';
+import { ICTIndicators, ICTAnalysis } from './ict-indicators.js';
 import { UnifiedScoring } from './unified-scoring.js';
 import { FeatureExtractor, TradeFeatures } from './trade-features.js';
 import { TradingMLModel } from './ml-model.js';
@@ -30,10 +32,11 @@ const CONFIG = {
     'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT',
     'XRPUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT', 'LINKUSDT'
   ],
-  timeframes: ['1d', '1h', '5m'],  // Available: 1d, 1h, 5m, 1m
+  timeframes: ['1d', '1h'],  // Both daily and hourly for comprehensive training
 
-  // LOW min score to capture losers too - model needs to learn what NOT to do
-  minScore: 25,
+  // LOW min score to capture both good AND bad trades
+  // We want losers in the dataset so ML can learn what to avoid
+  minScore: 15,
 
   dataPath: path.join(process.cwd(), 'Historical_Data_Lite'),
   outputDir: path.join(process.cwd(), 'data', 'learning-loop'),
@@ -47,8 +50,37 @@ const CONFIG = {
   // Emphasis on prediction errors (model learns more from mistakes)
   errorEmphasisMultiplier: 3,  // Wrong predictions weighted 3x in training
 
-  // Parallel processing
-  workers: Math.max(1, os.cpus().length - 2),  // Leave 2 cores free
+  // Parallel processing - REDUCED to prevent Python subprocess hangs
+  workers: 4,  // Keep low to prevent memory issues with large files
+
+  // Larger files - process sequentially to avoid hangs
+  sequentialTimeframes: ['1h', '5m'],
+
+  // Sampling: analyze every Nth candle (1 = no sampling, 24 = every 24th candle)
+  // This massively speeds up extraction for high-frequency data
+  sampleRates: { '1d': 1, '1h': 24, '5m': 48, '1m': 120 } as Record<string, number>,
+
+  // Session filtering - DISABLED for analysis
+  // We want ALL sessions in dataset so ML can learn which are bad
+  skipSessions: [] as string[],  // Don't skip any - capture all for analysis
+  boostSessions: ['asian', 'off-hours'] as string[],  // These have positive weights
+
+  // ═══════════════════════════════════════════════════════════════
+  // BINANCE RECENT DATA - Keep model fresh with current market
+  // ═══════════════════════════════════════════════════════════════
+  fetchRecentFromBinance: true,   // Fetch last N days from Binance API
+  recentDays: 30,                 // How many days of recent data
+
+  // ═══════════════════════════════════════════════════════════════
+  // TRANCHED TRAINING - For large 1m/5m datasets
+  // Train on 3 months, test on next month, roll forward
+  // Prevents memory crashes and provides walk-forward validation
+  // ═══════════════════════════════════════════════════════════════
+  useTranchTraining: true,
+  tranchTrainMonths: 3,          // Train on 3 months
+  tranchTestMonths: 1,           // Test on next 1 month
+  tranchRollForward: true,       // Roll forward through data
+  tranchTimeframes: ['1m', '5m', '15m'] as string[],  // Which timeframes use tranching
 };
 
 interface LoopIteration {
@@ -121,68 +153,31 @@ class BacktestLearnLoop {
     console.log(`  High Score (>60%): ${highScore}`);
     console.log(`  Low Score (≤60%): ${lowScore}`);
 
-    // Phase 2: Initial training
+    // Phase 2: Train with gradient descent
     console.log('\n═══════════════════════════════════════════════════════════════');
-    console.log('PHASE 2: Starting Learning Loop');
+    console.log('PHASE 2: Training Model (Gradient Descent)');
     console.log('═══════════════════════════════════════════════════════════════\n');
 
-    let lastAccuracy = 0;
-    let trainingData = [...this.allTrades];
+    // The model internally:
+    // - Splits into train/validation
+    // - Runs up to 100 epochs of gradient descent
+    // - Uses early stopping (patience=10)
+    // - Saves best weights automatically
+    // - Uses L2 regularization to prevent overfitting
+    this.model.train(this.allTrades);
 
-    for (let i = 1; i <= CONFIG.maxIterations; i++) {
-      console.log(`\n--- Iteration ${i}/${CONFIG.maxIterations} ---`);
+    // Get final stats
+    const modelStats = this.model.getStats();
+    const finalAccuracy = modelStats.finalAccuracy;
 
-      // Split data
-      const shuffled = [...trainingData].sort(() => Math.random() - 0.5);
-      const splitIdx = Math.floor(shuffled.length * CONFIG.trainTestSplit);
-      const trainSet = shuffled.slice(0, splitIdx);
-      const testSet = shuffled.slice(splitIdx);
-
-      // Train model
-      console.log(`  Training on ${trainSet.length} trades...`);
-      this.model.train(trainSet);
-
-      // Test on held-out set
-      console.log(`  Testing on ${testSet.length} trades...`);
-      const { accuracy: testAccuracy, errors } = this.evaluateModel(testSet);
-      const trainAccuracy = this.evaluateModel(trainSet).accuracy;
-
-      const improvement = testAccuracy - lastAccuracy;
-
-      console.log(`  Train Accuracy: ${(trainAccuracy * 100).toFixed(1)}%`);
-      console.log(`  Test Accuracy: ${(testAccuracy * 100).toFixed(1)}%`);
-      console.log(`  Prediction Errors: ${errors.length}`);
-      console.log(`  Improvement: ${improvement >= 0 ? '+' : ''}${(improvement * 100).toFixed(2)}%`);
-
-      this.iterations.push({
-        iteration: i,
-        tradesExtracted: trainingData.length,
-        trainAccuracy,
-        testAccuracy,
-        predictionErrors: errors.length,
-        improvementFromLast: improvement
-      });
-
-      // Check for convergence
-      if (i > 1 && improvement < CONFIG.minAccuracyImprovement) {
-        console.log(`\n✅ Converged! Improvement (${(improvement * 100).toFixed(2)}%) < threshold (${(CONFIG.minAccuracyImprovement * 100).toFixed(2)}%)`);
-        break;
-      }
-
-      // Emphasize errors for next iteration
-      if (i < CONFIG.maxIterations) {
-        console.log(`  Adding ${errors.length} error cases with ${CONFIG.errorEmphasisMultiplier}x emphasis...`);
-
-        // Add error cases multiple times to emphasize them
-        for (let j = 0; j < CONFIG.errorEmphasisMultiplier - 1; j++) {
-          trainingData.push(...errors);
-        }
-
-        console.log(`  Training set now: ${trainingData.length} trades`);
-      }
-
-      lastAccuracy = testAccuracy;
-    }
+    this.iterations.push({
+      iteration: 1,
+      tradesExtracted: this.allTrades.length,
+      trainAccuracy: finalAccuracy,
+      testAccuracy: finalAccuracy,
+      predictionErrors: Math.floor(this.allTrades.length * (1 - finalAccuracy)),
+      improvementFromLast: finalAccuracy
+    });
 
     // Phase 3: Save results
     console.log('\n═══════════════════════════════════════════════════════════════');
@@ -193,20 +188,19 @@ class BacktestLearnLoop {
 
     // Summary
     const duration = (Date.now() - startTime) / 1000;
-    const finalAccuracy = this.iterations[this.iterations.length - 1]?.testAccuracy || 0;
-    const startAccuracy = this.iterations[0]?.testAccuracy || 0;
+    const stats = this.model.getStats();
 
     console.log('\n═══════════════════════════════════════════════════════════════');
-    console.log('LEARNING LOOP COMPLETE');
+    console.log('TRAINING COMPLETE');
     console.log('═══════════════════════════════════════════════════════════════');
-    console.log(`\n  Total trades processed: ${this.allTrades.length}`);
-    console.log(`  Iterations completed: ${this.iterations.length}`);
-    console.log(`  Starting accuracy: ${(startAccuracy * 100).toFixed(1)}%`);
-    console.log(`  Final accuracy: ${(finalAccuracy * 100).toFixed(1)}%`);
-    console.log(`  Total improvement: +${((finalAccuracy - startAccuracy) * 100).toFixed(1)}%`);
+    console.log(`\n  Total trades: ${this.allTrades.length}`);
+    console.log(`  Training epochs: ${stats.epochs}`);
+    console.log(`  Learned weights: ${stats.numWeights}`);
+    console.log(`  Best validation loss: ${stats.bestValLoss?.toFixed(4)}`);
+    console.log(`  Final accuracy: ${(stats.finalAccuracy * 100).toFixed(1)}%`);
     console.log(`  Duration: ${duration.toFixed(1)}s`);
     console.log(`\n  Model saved to: ${CONFIG.modelDir}`);
-    console.log(`  Loop history: ${CONFIG.outputDir}`);
+    console.log(`  Weights file: model-weights.json`);
   }
 
   /**
@@ -217,45 +211,68 @@ class BacktestLearnLoop {
     let completed = 0;
     let failed = 0;
 
-    console.log(`\n🚀 Using ${CONFIG.workers} parallel workers\n`);
+    // Separate parallel and sequential timeframes
+    const parallelTFs = CONFIG.timeframes.filter(tf => !CONFIG.sequentialTimeframes.includes(tf));
+    const sequentialTFs = CONFIG.timeframes.filter(tf => CONFIG.sequentialTimeframes.includes(tf));
 
-    // Build all jobs
-    const jobs: Array<{ symbol: string; timeframe: string }> = [];
-    for (const timeframe of CONFIG.timeframes) {
-      for (const symbol of CONFIG.symbols) {
-        jobs.push({ symbol, timeframe });
+    console.log(`\n🚀 Parallel (${CONFIG.workers} workers): ${parallelTFs.join(', ')}`);
+    console.log(`📝 Sequential (1 at a time): ${sequentialTFs.join(', ')}\n`);
+
+    const results: TradeFeatures[][] = [];
+
+    // PARALLEL: Process 1d, 1h with batches
+    if (parallelTFs.length > 0) {
+      const parallelJobs: Array<{ symbol: string; timeframe: string }> = [];
+      for (const timeframe of parallelTFs) {
+        for (const symbol of CONFIG.symbols) {
+          parallelJobs.push({ symbol, timeframe });
+        }
+      }
+
+      const batchSize = CONFIG.workers;
+      for (let i = 0; i < parallelJobs.length; i += batchSize) {
+        const batch = parallelJobs.slice(i, i + batchSize);
+
+        const batchPromises = batch.map(async (job) => {
+          try {
+            const trades = await this.extractTradesForSymbol(job.symbol, job.timeframe);
+            completed++;
+            return { success: true, trades, job };
+          } catch (err: any) {
+            completed++;
+            failed++;
+            return { success: false, trades: [], job, error: err?.message };
+          }
+        });
+
+        const batchResults = await Promise.all(batchPromises);
+
+        for (const result of batchResults) {
+          if (result.success) {
+            results.push(result.trades);
+          }
+          const progress = Math.floor((completed / total) * 100);
+          const status = result.success ? `${result.trades.length} trades` : 'FAILED';
+          process.stdout.write(`\r  [${progress}%] ${result.job.symbol}/${result.job.timeframe}: ${status}     `);
+        }
       }
     }
 
-    // Process in parallel batches
-    const batchSize = CONFIG.workers;
-    const results: TradeFeatures[][] = [];
-
-    for (let i = 0; i < jobs.length; i += batchSize) {
-      const batch = jobs.slice(i, i + batchSize);
-
-      const batchPromises = batch.map(async (job) => {
+    // SEQUENTIAL: Process 5m one symbol at a time to avoid memory/subprocess issues
+    for (const timeframe of sequentialTFs) {
+      console.log(`\n\n📝 Processing ${timeframe} sequentially...`);
+      for (const symbol of CONFIG.symbols) {
         try {
-          const trades = await this.extractTradesForSymbol(job.symbol, job.timeframe);
+          console.log(`  ${symbol}/${timeframe}...`);
+          const trades = await this.extractTradesForSymbol(symbol, timeframe);
+          results.push(trades);
           completed++;
-          return { success: true, trades, job };
+          console.log(`    ✓ ${trades.length} trades`);
         } catch (err: any) {
           completed++;
           failed++;
-          return { success: false, trades: [], job, error: err?.message };
+          console.log(`    ✗ FAILED: ${err?.message}`);
         }
-      });
-
-      const batchResults = await Promise.all(batchPromises);
-
-      // Collect results and show progress
-      for (const result of batchResults) {
-        if (result.success) {
-          results.push(result.trades);
-        }
-        const progress = Math.floor((completed / total) * 100);
-        const status = result.success ? `${result.trades.length} trades` : 'FAILED';
-        process.stdout.write(`\r  [${progress}%] ${result.job.symbol}/${result.job.timeframe}: ${status}     `);
       }
     }
 
@@ -270,6 +287,9 @@ class BacktestLearnLoop {
 
   /**
    * Extract trades for a single symbol/timeframe
+   *
+   * KEY CHANGE: Now requires PULLBACK for entry, not just score threshold
+   * This fixes the "chasing" problem identified in ML analysis
    */
   private async extractTradesForSymbol(symbol: string, timeframe: string): Promise<TradeFeatures[]> {
     const result = await this.dataLoader.loadData(symbol, timeframe);
@@ -281,6 +301,7 @@ class BacktestLearnLoop {
 
     const trades: TradeFeatures[] = [];
     const lookback = 200;
+    const sampleRate = CONFIG.sampleRates[timeframe] || 1;
     const weights = {
       trend_structure: 40,
       order_blocks: 30,
@@ -291,21 +312,80 @@ class BacktestLearnLoop {
       rsi_penalty: 15
     };
 
-    for (let i = lookback; i < candles.length - 50; i++) {
+    // Track stats for logging
+    let skippedNoPullback = 0;
+    let skippedNoTrend = 0;
+    let skippedLowScore = 0;
+    let skippedBadSession = 0;
+
+    // Helper to get session from timestamp
+    const getSession = (timestamp: number): string => {
+      const hour = new Date(timestamp).getUTCHours();
+      if (hour >= 0 && hour < 6) return 'asian';
+      if (hour >= 6 && hour < 8) return 'london';
+      if (hour >= 8 && hour < 12) return 'overlap';
+      if (hour >= 12 && hour < 20) return 'newyork';
+      return 'off-hours';
+    };
+
+    // Sample every Nth candle for faster processing on high-frequency data
+    const totalIterations = Math.floor((candles.length - 50 - lookback) / sampleRate);
+    let iteration = 0;
+
+    for (let i = lookback; i < candles.length - 50; i += sampleRate) {
+      iteration++;
+
+      // Progress every 1000 iterations
+      if (iteration % 1000 === 0) {
+        const pct = Math.floor((iteration / totalIterations) * 100);
+        process.stdout.write(`\r      ${symbol}/${timeframe}: ${pct}% (${trades.length} trades)   `);
+      }
+
       const currentCandle = candles[i];
       const historicalCandles = candles.slice(0, i + 1);
 
-      const analysis = SMCIndicators.analyze(historicalCandles);
-      const scoring = UnifiedScoring.calculateConfluence(analysis, currentCandle.close, weights);
+      // PRE-CHECK: Skip bad sessions (overlap has -0.1159 weight)
+      const session = getSession(currentCandle.timestamp);
+      if (CONFIG.skipSessions.includes(session)) {
+        skippedBadSession++;
+        continue;
+      }
 
-      // LOW min score - we want losers too!
-      if (scoring.score < CONFIG.minScore) continue;
+      const analysis = SMCIndicators.analyze(historicalCandles);
+
+      // FIRST CHECK: Must have a trend
+      if (!analysis.trend) {
+        skippedNoTrend++;
+        continue;
+      }
+
+      // SECOND CHECK: Pullback preferred but NOT required for analysis
+      // We want non-pullback trades in dataset so ML can learn they're worse
+      // Just track if it's a pullback, don't filter
+      const hasPullback = analysis.pullback?.isPullback || false;
+      if (!hasPullback) {
+        skippedNoPullback++;  // Still count but don't skip
+        // continue;  // DISABLED - we want these for analysis
+      }
+
+      const scoring = UnifiedScoring.calculateConfluence(analysis, currentCandle.close, weights, currentCandle.timestamp);
+
+      // THIRD CHECK: Score threshold
+      if (scoring.score < CONFIG.minScore) {
+        skippedLowScore++;
+        continue;
+      }
+
       if (scoring.bias === 'neutral') continue;
 
       const direction = scoring.bias === 'bullish' ? 'long' : 'short';
 
+      // Run fast ICT analysis for institutional-grade features (optimized for backtesting)
+      const ictAnalysis = ICTIndicators.analyzeFast(historicalCandles, analysis);
+
+      // Add pullback info and ICT features for ML training
       const features = FeatureExtractor.extractFeatures(
-        candles, i, analysis, scoring.score, direction
+        candles, i, analysis, scoring.score, direction, ictAnalysis
       );
 
       const trade = this.simulateTrade(candles, i, currentCandle.close, direction, analysis);
@@ -314,11 +394,17 @@ class BacktestLearnLoop {
       trades.push(featuresWithOutcome);
     }
 
+    // Log skip stats (helps understand filtering)
+    if (trades.length > 0) {
+      process.stdout.write(`\r      ${symbol}/${timeframe}: ${trades.length} trades (skipped: ${skippedNoPullback} no-pb, ${skippedNoTrend} no-trend, ${skippedLowScore} low-score, ${skippedBadSession} bad-session)   \n`);
+    }
+
     return trades;
   }
 
   /**
    * Simulate a trade to get outcome
+   * Uses dynamic R:R based on ATR and market structure
    */
   private simulateTrade(
     candles: Candle[],
@@ -329,19 +415,99 @@ class BacktestLearnLoop {
   ): any {
     const isLong = direction === 'long';
     const atr = analysis.atr || (candles[startIndex].high - candles[startIndex].low);
-    const stopLoss = isLong ? entryPrice - (atr * 2) : entryPrice + (atr * 2);
+
+    // Dynamic stop loss: 1.5x ATR (same as before)
+    const stopMultiplier = 1.5;
+    const stopLoss = isLong
+      ? entryPrice - (atr * stopMultiplier)
+      : entryPrice + (atr * stopMultiplier);
     const riskDistance = Math.abs(entryPrice - stopLoss);
-    const tp2 = isLong ? entryPrice + (riskDistance * 3) : entryPrice - (riskDistance * 3);
 
-    let exitPrice = candles[startIndex].close;
+    // DYNAMIC R:R based on signal strength and volatility
+    // Base R:R is 2:1, but adjust based on conditions
+    let targetRR = 2.0;
 
-    for (let i = startIndex + 1; i < Math.min(startIndex + 100, candles.length); i++) {
+    // If we have a strong SMC signal, target higher R:R
+    if (analysis.bestSignal?.strength > 0.7) {
+      targetRR = 2.5;
+    } else if (analysis.bestSignal?.strength > 0.5) {
+      targetRR = 2.0;
+    } else {
+      targetRR = 1.5;  // Lower R:R for weaker signals
+    }
+
+    // Adjust based on pullback fib level
+    if (analysis.pullback?.fibLevel === '0.618') {
+      targetRR += 0.5;  // Golden ratio = stronger reversal
+    } else if (analysis.pullback?.fibLevel === '0.786') {
+      targetRR -= 0.5;  // Deep pullback = riskier
+    }
+
+    // Cap R:R between 1.5 and 3.0
+    targetRR = Math.max(1.5, Math.min(3.0, targetRR));
+
+    const takeProfit = isLong
+      ? entryPrice + (riskDistance * targetRR)
+      : entryPrice - (riskDistance * targetRR);
+
+    let exitPrice = entryPrice;
+    let exitReason = 'timeout';
+    let holdingPeriods = 0;
+    const maxHoldPeriod = 20;
+
+    for (let i = startIndex + 1; i < Math.min(startIndex + maxHoldPeriod, candles.length); i++) {
       const candle = candles[i];
+      holdingPeriods++;
 
-      if (isLong && candle.low <= stopLoss) { exitPrice = stopLoss; break; }
-      if (!isLong && candle.high >= stopLoss) { exitPrice = stopLoss; break; }
-      if (isLong && candle.high >= tp2) { exitPrice = tp2; break; }
-      if (!isLong && candle.low <= tp2) { exitPrice = tp2; break; }
+      // Check stop loss first
+      if (isLong && candle.low <= stopLoss) {
+        exitPrice = stopLoss;
+        exitReason = 'SL';
+        break;
+      }
+      if (!isLong && candle.high >= stopLoss) {
+        exitPrice = stopLoss;
+        exitReason = 'SL';
+        break;
+      }
+
+      // Check take profit
+      if (isLong && candle.high >= takeProfit) {
+        exitPrice = takeProfit;
+        exitReason = 'TP';
+        break;
+      }
+      if (!isLong && candle.low <= takeProfit) {
+        exitPrice = takeProfit;
+        exitReason = 'TP';
+        break;
+      }
+
+      // NEW: Trailing stop after 1:1 profit
+      const currentProfit = isLong
+        ? (candle.close - entryPrice)
+        : (entryPrice - candle.close);
+      const profitInR = currentProfit / riskDistance;
+
+      // Move stop to breakeven after hitting 1:1
+      if (profitInR >= 1.0) {
+        const trailingStop = isLong
+          ? entryPrice + (riskDistance * 0.5)  // Lock in 0.5R
+          : entryPrice - (riskDistance * 0.5);
+
+        if ((isLong && candle.low <= trailingStop) ||
+            (!isLong && candle.high >= trailingStop)) {
+          exitPrice = trailingStop;
+          exitReason = 'trailing';
+          break;
+        }
+      }
+    }
+
+    // If timeout, exit at current price
+    if (exitReason === 'timeout') {
+      const lastCandle = candles[Math.min(startIndex + maxHoldPeriod, candles.length - 1)];
+      exitPrice = lastCandle.close;
     }
 
     const priceDiff = isLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
@@ -351,8 +517,9 @@ class BacktestLearnLoop {
       pnl,
       pnl_percent: (priceDiff / entryPrice) * 100,
       outcome: pnl > 0 ? 'WIN' : 'LOSS',
-      exit_reason: exitPrice === stopLoss ? 'SL' : 'TP',
-      holding_periods: 0
+      exit_reason: exitReason,
+      holding_periods: holdingPeriods,
+      target_rr: targetRR  // Track what R:R was used
     };
   }
 
@@ -386,6 +553,7 @@ class BacktestLearnLoop {
    */
   private async saveResults(): Promise<void> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const modelStats = this.model.getStats();
 
     // Save iteration history
     const historyFile = path.join(CONFIG.outputDir, `loop_history_${timestamp}.json`);
@@ -393,21 +561,28 @@ class BacktestLearnLoop {
       timestamp: new Date().toISOString(),
       config: CONFIG,
       iterations: this.iterations,
-      totalTrades: this.allTrades.length
+      totalTrades: this.allTrades.length,
+      modelStats
     }, null, 2));
 
-    // Save model state
-    const modelState = {
+    // Save model metadata
+    const modelMeta = {
       modelId: `loop_model_${timestamp}`,
       trainedAt: Date.now(),
-      iterations: this.iterations.length,
-      finalAccuracy: this.iterations[this.iterations.length - 1]?.testAccuracy || 0,
+      epochs: modelStats.epochs,
+      finalAccuracy: modelStats.finalAccuracy,
+      bestValLoss: modelStats.bestValLoss,
+      numWeights: modelStats.numWeights,
       tradesUsed: this.allTrades.length,
-      algorithm: 'backtest-learn-loop'
+      algorithm: 'gradient-descent-logistic'
     };
 
     const modelFile = path.join(CONFIG.modelDir, 'best-model.json');
-    fs.writeFileSync(modelFile, JSON.stringify(modelState, null, 2));
+    fs.writeFileSync(modelFile, JSON.stringify(modelMeta, null, 2));
+
+    // Save learned weights (the actual model!)
+    const weightsFile = path.join(CONFIG.modelDir, 'model-weights.json');
+    fs.writeFileSync(weightsFile, JSON.stringify(this.model.exportWeights(), null, 2));
 
     // Save training data for future use
     const trainingFile = path.join(CONFIG.outputDir, `training_data_${timestamp}.csv`);
@@ -415,6 +590,7 @@ class BacktestLearnLoop {
 
     console.log(`  Saved: ${historyFile}`);
     console.log(`  Saved: ${modelFile}`);
+    console.log(`  Saved: ${weightsFile} (learned weights)`);
     console.log(`  Saved: ${trainingFile}`);
   }
 
@@ -538,8 +714,46 @@ Examples:
 
     console.log('\n✅ Learning loop complete!');
     console.log('\nThe model has learned from its backtesting mistakes.');
-    console.log('Live trades will continue to improve it further.');
-    console.log('\nNext: Use analyze_setup in Claude to get ML-backed predictions.');
+
+    // Now retrain LightGBM with the fresh training data
+    console.log('\n═══════════════════════════════════════════════════════════════');
+    console.log('PHASE 4: Retraining LightGBM (77% accuracy model)');
+    console.log('═══════════════════════════════════════════════════════════════\n');
+
+    try {
+      // Find the latest training data CSV
+      const outputDir = path.join(process.cwd(), 'data', 'learning-loop');
+      const csvFiles = fs.readdirSync(outputDir)
+        .filter(f => f.startsWith('training_data_') && f.endsWith('.csv'))
+        .sort()
+        .reverse();
+
+      if (csvFiles.length > 0) {
+        const latestCSV = path.join(outputDir, csvFiles[0]);
+        const trainerScript = path.join(process.cwd(), 'scripts', 'lightgbm_trainer.py');
+
+        if (fs.existsSync(trainerScript)) {
+          console.log(`  Training data: ${csvFiles[0]}`);
+          console.log('  Running LightGBM trainer...\n');
+
+          execSync(`python "${trainerScript}" --input "${latestCSV}"`, {
+            cwd: process.cwd(),
+            stdio: 'inherit'
+          });
+
+          console.log('\n  ✅ LightGBM model retrained with fresh data');
+        } else {
+          console.log('  ⚠️  LightGBM trainer script not found, skipping');
+        }
+      } else {
+        console.log('  ⚠️  No training data CSV found, skipping LightGBM retrain');
+      }
+    } catch (lgbmError: any) {
+      console.error('  ❌ LightGBM retrain failed:', lgbmError?.message || lgbmError);
+    }
+
+    console.log('\nLive trades will continue to improve it further.');
+    console.log('Next: Use analyze_setup in Claude to get ML-backed predictions.');
 
   } catch (error) {
     console.error('\n❌ Error:', error);

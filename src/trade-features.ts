@@ -1,10 +1,18 @@
 /**
  * Trade Feature Extractor
  * Extracts detailed features from each trade setup for ML training
+ *
+ * Includes ICT (Inner Circle Trader) institutional features:
+ * - OTE Zone (Optimal Trade Entry)
+ * - Displacement Detection
+ * - Liquidity Grabs
+ * - Judas Swings
+ * - Killzone Timing
  */
 
 import { Candle } from './smc-indicators.js';
 import { SMCAnalysis, SMCIndicators } from './smc-indicators.js';
+import { ICTIndicators, ICTAnalysis } from './ict-indicators.js';
 import fs from 'fs';
 
 // Trade outcome data (for adding to features after backtest)
@@ -108,7 +116,106 @@ export interface TradeFeatures {
   
   // Risk/Reward
   potential_rr: number;  // Potential risk/reward ratio
-  
+
+  // Pullback features (key for entry timing)
+  is_pullback: boolean;          // Is price in a pullback?
+  pullback_depth: number;        // 0-1, how deep the pullback
+  pullback_fib: string;          // Which fib level ('0.382', '0.5', '0.618', '0.786', 'none')
+  pullback_bars: number;         // How many bars into pullback
+
+  // NEW: SMC Return signals (correct OB/FVG usage)
+  has_ob_return: boolean;        // Is there an OB return signal?
+  has_fvg_fill: boolean;         // Is there an FVG fill signal?
+  smc_signal_strength: number;   // 0-1, strength of best SMC signal
+  ob_return_age: number;         // Bars since OB formed (if OB return)
+  ob_test_count: number;         // How many times OB tested (0 = fresh = BEST)
+  ob_is_fresh: boolean;          // Is this a fresh, untested OB?
+  fvg_fill_percent: number;      // How much of FVG is already filled
+
+  // OB State Machine (proper SMC logic)
+  ob_state: string;              // NEW_OB, WAITING, IN_MITIGATION, CONFIRMED, INVALIDATED
+  ob_confirmed_mitigated: boolean;  // BEST: Rejection + BOS confirmed
+  ob_in_mitigation: boolean;     // Price currently testing zone
+  ob_caused_bos: boolean;        // Did OB cause break of structure?
+  ob_has_displacement: boolean;  // Was there displacement after OB?
+  ob_impulse_size: number;       // Size of move after OB (ATR multiples)
+
+  // NEW: Swing timing
+  bars_since_swing_high: number; // Bars since recent swing high
+  bars_since_swing_low: number;  // Bars since recent swing low
+
+  // ═══════════════════════════════════════════════════════════════
+  // ICT (Inner Circle Trader) Institutional Features
+  // ═══════════════════════════════════════════════════════════════
+
+  // OTE (Optimal Trade Entry) - 61.8%-79% Fib zone
+  ote_in_zone: boolean;           // Is price currently in OTE zone?
+  ote_zone_direction: 'bullish' | 'bearish' | 'none';
+
+  // Displacement (Institutional momentum)
+  displacement_detected: boolean;
+  displacement_direction: 'up' | 'down' | 'none';
+  displacement_strength: number;  // ATR multiple of move
+
+  // Liquidity Grab (Stop hunt)
+  liquidity_grab_detected: boolean;
+  liquidity_grab_type: 'buy_side' | 'sell_side' | 'none';
+  liquidity_grab_volume_spike: number;
+
+  // Judas Swing (Asian session fakeout)
+  judas_swing_detected: boolean;
+  judas_swing_direction: 'bullish' | 'bearish' | 'none';
+  judas_swing_complete: boolean;
+
+  // Killzone (Optimal trading hours)
+  killzone_active: boolean;
+  killzone_name: 'london' | 'new_york' | 'asian' | 'none';
+
+  // Market Structure (BOS/CHoCH)
+  market_structure_trend: 'bullish' | 'bearish' | 'ranging';
+  bos_detected: boolean;          // Break of Structure
+  choch_detected: boolean;        // Change of Character
+  in_discount: boolean;           // Price below equilibrium
+  in_premium: boolean;            // Price above equilibrium
+
+  // Zone Confluence
+  ob_in_ote: boolean;             // Order Block overlaps OTE
+  fvg_in_ote: boolean;            // FVG overlaps OTE
+
+  // Market Regime
+  efficiency_ratio: number;       // Net move / total move (0-1)
+  is_trending_market: boolean;    // Efficiency ratio >= 0.30
+
+  // ═══════════════════════════════════════════════════════════════
+  // Bollinger Bands Features
+  // ═══════════════════════════════════════════════════════════════
+  bb_position: number;            // 0-1, where price is in bands (0=lower, 1=upper)
+  bb_width: number;               // Band width as % of price (volatility)
+  bb_squeeze: boolean;            // Bands tight (low volatility, breakout coming)
+  bb_breakout_upper: boolean;     // Price above upper band
+  bb_breakout_lower: boolean;     // Price below lower band
+
+  // ═══════════════════════════════════════════════════════════════
+  // Institutional Flow Features (volume-based detection)
+  // ═══════════════════════════════════════════════════════════════
+  large_volume_spike: boolean;    // Volume 3x+ average (institutional activity)
+  volume_delta: number;           // Buy vs sell pressure estimate
+  accumulation_detected: boolean; // High volume + price holding (accumulation)
+  distribution_detected: boolean; // High volume + price falling (distribution)
+  smart_money_direction: 'buy' | 'sell' | 'neutral';  // Inferred institutional direction
+
+  // ICT Entry Quality
+  ict_entry_score: number;        // 0-100 ICT-specific score
+  ict_entry_valid: boolean;       // Meets ICT entry criteria
+
+  // HTF Cascade
+  htf_cascade_aligned: boolean;   // Multi-timeframe alignment
+  htf_cascade_score: number;      // 0-1 alignment score
+
+  // Entry Checklist (12 conditions)
+  checklist_pass_rate: number;    // 0-1, how many conditions passed
+  checklist_grade: 'A' | 'B' | 'C' | 'D' | 'F';
+
   // Outcome (for training)
   outcome: 'WIN' | 'LOSS';
   pnl: number;
@@ -120,13 +227,15 @@ export interface TradeFeatures {
 export class FeatureExtractor {
   /**
    * Extract features from a trade entry point
+   * Includes both SMC and ICT institutional features
    */
   static extractFeatures(
     candles: Candle[],
     index: number,
     analysis: SMCAnalysis,
     score: number,
-    direction: 'long' | 'short'
+    direction: 'long' | 'short',
+    ictAnalysis?: ICTAnalysis
   ): Omit<TradeFeatures, 'outcome' | 'pnl' | 'pnl_percent' | 'exit_reason' | 'holding_periods'> {
     const currentCandle = candles[index];
     const config = featureConfig.feature_extraction;
@@ -274,7 +383,207 @@ export class FeatureExtractor {
     
     // Risk/Reward potential (based on ATR and nearest resistance)
     const potential_rr = 2;  // Default 1:2 RR, would calculate from actual levels
-    
+
+    // Pullback features (crucial for entry timing)
+    const is_pullback = analysis.pullback?.isPullback || false;
+    const pullback_depth = analysis.pullback?.pullbackDepth || 0;
+    const pullback_fib = analysis.pullback?.fibLevel || 'none';
+    const pullback_bars = analysis.pullback?.pullbackBars || 0;
+
+    // SMC Return signals (correct OB/FVG usage)
+    const bestSignal = analysis.bestSignal;
+    const has_ob_return = bestSignal?.type === 'ob_return' || false;
+    const has_fvg_fill = bestSignal?.type === 'fvg_fill' || false;
+    const smc_signal_strength = bestSignal?.strength || 0;
+
+    // Get OB details from the signal (state machine fields)
+    let ob_return_age = 0;
+    let ob_test_count = 0;
+    let ob_is_fresh = false;
+    let fvg_fill_percent = 0;
+    let ob_state = 'none';
+    let ob_confirmed_mitigated = false;
+    let ob_in_mitigation = false;
+    let ob_caused_bos = false;
+    let ob_has_displacement = false;
+    let ob_impulse_size = 0;
+
+    if (bestSignal && bestSignal.zone) {
+      if (bestSignal.type === 'ob_return') {
+        const ob = bestSignal.zone as any;
+        ob_return_age = ob.barsAgo || 0;
+        ob_test_count = ob.testCount || 0;
+        ob_is_fresh = ob_test_count === 0;
+
+        // State machine fields
+        ob_state = ob.state || 'unknown';
+        ob_confirmed_mitigated = ob.state === 'CONFIRMED_MITIGATED';
+        ob_in_mitigation = ob.state === 'IN_MITIGATION';
+        ob_caused_bos = ob.causedBOS || false;
+        ob_has_displacement = ob.hasDisplacement || false;
+        ob_impulse_size = ob.impulseSize || 0;
+      }
+      if (bestSignal.type === 'fvg_fill' && 'fillPercent' in bestSignal.zone) {
+        fvg_fill_percent = (bestSignal.zone as any).fillPercent || 0;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Bollinger Bands Calculation (20-period, 2 std dev)
+    // ═══════════════════════════════════════════════════════════════
+    const bbPeriod = 20;
+    const bbStdDev = 2;
+    let bb_position = 0.5;
+    let bb_width = 0;
+    let bb_squeeze = false;
+    let bb_breakout_upper = false;
+    let bb_breakout_lower = false;
+
+    if (historicalCandles.length >= bbPeriod) {
+      const bbCandles = historicalCandles.slice(-bbPeriod);
+      const closes = bbCandles.map(c => c.close);
+      const bbSma = closes.reduce((a, b) => a + b, 0) / bbPeriod;
+      const variance = closes.reduce((sum, c) => sum + Math.pow(c - bbSma, 2), 0) / bbPeriod;
+      const stdDev = Math.sqrt(variance);
+
+      const upperBand = bbSma + (stdDev * bbStdDev);
+      const lowerBand = bbSma - (stdDev * bbStdDev);
+      const bandWidth = upperBand - lowerBand;
+
+      // Position within bands (0 = at lower, 1 = at upper)
+      bb_position = bandWidth > 0 ? (currentCandle.close - lowerBand) / bandWidth : 0.5;
+      bb_position = Math.max(0, Math.min(1, bb_position));
+
+      // Width as percentage of price
+      bb_width = (bandWidth / currentCandle.close) * 100;
+
+      // Squeeze detection (tight bands = low volatility = potential breakout)
+      const avgWidth = bb_width;  // Could compare to historical average
+      bb_squeeze = bb_width < 3;  // Less than 3% width = squeeze
+
+      // Breakout detection
+      bb_breakout_upper = currentCandle.close > upperBand;
+      bb_breakout_lower = currentCandle.close < lowerBand;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Institutional Flow Detection (volume-based)
+    // ═══════════════════════════════════════════════════════════════
+    const instVolLookback = Math.min(20, historicalCandles.length);
+    const instRecentVolumes = historicalCandles.slice(-instVolLookback).map(c => c.volume);
+    const instAvgVolume = instRecentVolumes.reduce((a, b) => a + b, 0) / instVolLookback;
+    const currentVolume = currentCandle.volume;
+
+    // Large volume spike = potential institutional activity
+    const large_volume_spike = currentVolume >= instAvgVolume * 3;
+
+    // Volume delta estimate (bullish vs bearish pressure)
+    // If close > open with high volume = buying pressure
+    // If close < open with high volume = selling pressure
+    const priceChange = currentCandle.close - currentCandle.open;
+    const volume_delta = currentVolume > instAvgVolume
+      ? (priceChange > 0 ? 1 : priceChange < 0 ? -1 : 0) * (currentVolume / instAvgVolume)
+      : 0;
+
+    // Accumulation: High volume + price holding/rising (smart money buying)
+    const recentPriceChange = historicalCandles.length >= 5
+      ? (currentCandle.close - historicalCandles[historicalCandles.length - 5].close) / historicalCandles[historicalCandles.length - 5].close
+      : 0;
+    const accumulation_detected = large_volume_spike && recentPriceChange >= -0.01;  // High vol, price not falling
+
+    // Distribution: High volume + price falling (smart money selling)
+    const distribution_detected = large_volume_spike && recentPriceChange < -0.02;  // High vol, price dropping
+
+    // Smart money direction inference
+    let smart_money_direction: 'buy' | 'sell' | 'neutral' = 'neutral';
+    if (accumulation_detected) smart_money_direction = 'buy';
+    else if (distribution_detected) smart_money_direction = 'sell';
+
+    // Swing timing - find bars since swing high/low
+    let bars_since_swing_high = 999;
+    let bars_since_swing_low = 999;
+    const swingLookback = Math.min(50, historicalCandles.length);
+    for (let j = historicalCandles.length - 1; j >= historicalCandles.length - swingLookback; j--) {
+      const c = historicalCandles[j];
+      // Simple swing detection
+      if (j > 2 && j < historicalCandles.length - 2) {
+        const isSwingHigh = c.high >= historicalCandles[j-1].high &&
+                           c.high >= historicalCandles[j-2].high &&
+                           c.high >= historicalCandles[j+1]?.high &&
+                           c.high >= historicalCandles[j+2]?.high;
+        const isSwingLow = c.low <= historicalCandles[j-1].low &&
+                          c.low <= historicalCandles[j-2].low &&
+                          c.low <= historicalCandles[j+1]?.low &&
+                          c.low <= historicalCandles[j+2]?.low;
+
+        if (isSwingHigh && bars_since_swing_high === 999) {
+          bars_since_swing_high = historicalCandles.length - 1 - j;
+        }
+        if (isSwingLow && bars_since_swing_low === 999) {
+          bars_since_swing_low = historicalCandles.length - 1 - j;
+        }
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ICT (Inner Circle Trader) Feature Extraction
+    // ═══════════════════════════════════════════════════════════════
+
+    // If ICT analysis provided, use it; otherwise compute fast version
+    const ict = ictAnalysis || ICTIndicators.analyzeFast(historicalCandles, analysis);
+
+    // OTE Zone features
+    const ote_in_zone = ict.ote.valid &&
+      currentCandle.close >= ict.ote.bottom &&
+      currentCandle.close <= ict.ote.top;
+    const ote_zone_direction = ict.ote.valid ? ict.ote.direction : 'none';
+
+    // Displacement features
+    const displacement_detected = ict.displacement.detected;
+    const displacement_direction = ict.displacement.detected ? ict.displacement.direction : 'none';
+    const displacement_strength = ict.displacement.atrMultiple;
+
+    // Liquidity Grab features
+    const liquidity_grab_detected = ict.liquidityGrab.detected;
+    const liquidity_grab_type = ict.liquidityGrab.detected ? ict.liquidityGrab.type : 'none';
+    const liquidity_grab_volume_spike = ict.liquidityGrab.volumeSpike;
+
+    // Judas Swing features
+    const judas_swing_detected = ict.judasSwing.detected;
+    const judas_swing_direction = ict.judasSwing.detected ? ict.judasSwing.direction : 'none';
+    const judas_swing_complete = ict.judasSwing.manipulationComplete;
+
+    // Killzone features
+    const killzone_active = ict.killzone.active;
+    const killzone_name = ict.killzone.name;
+
+    // Market Structure features
+    const market_structure_trend = ict.structure.trend;
+    const bos_detected = ict.structure.lastBOS !== null;
+    const choch_detected = ict.structure.lastCHoCH !== null;
+    const in_discount = ict.structure.inDiscount;
+    const in_premium = ict.structure.inPremium;
+
+    // Zone Confluence features
+    const ob_in_ote = ict.obInOTE.length > 0;
+    const fvg_in_ote = ict.fvgInOTE.length > 0;
+
+    // Market Regime features
+    const efficiency_ratio = ICTIndicators.calculateEfficiencyRatio(historicalCandles, 30);
+    const is_trending_market = efficiency_ratio >= 0.30;
+
+    // ICT Entry Quality
+    const ict_entry_score = ict.entryScore;
+    const ict_entry_valid = ict.entryValid;
+
+    // HTF Cascade
+    const htf_cascade_aligned = ict.htfCascade.aligned;
+    const htf_cascade_score = ict.htfCascade.alignmentScore;
+
+    // Entry Checklist
+    const checklist_pass_rate = ict.entryChecklist.passRate;
+    const checklist_grade = ict.entryChecklist.entryGrade;
+
     return {
       entry_price: currentCandle.close,
       entry_time: currentCandle.timestamp,
@@ -311,7 +620,70 @@ export class FeatureExtractor {
       session,
       days_since_loss,
       streak_type,
-      potential_rr
+      potential_rr,
+      is_pullback,
+      pullback_depth,
+      pullback_fib,
+      pullback_bars,
+      has_ob_return,
+      has_fvg_fill,
+      smc_signal_strength,
+      ob_return_age,
+      ob_test_count,
+      ob_is_fresh,
+      fvg_fill_percent,
+      ob_state,
+      ob_confirmed_mitigated,
+      ob_in_mitigation,
+      ob_caused_bos,
+      ob_has_displacement,
+      ob_impulse_size,
+      bars_since_swing_high: Math.min(bars_since_swing_high, 100),
+      bars_since_swing_low: Math.min(bars_since_swing_low, 100),
+
+      // Bollinger Bands
+      bb_position,
+      bb_width,
+      bb_squeeze,
+      bb_breakout_upper,
+      bb_breakout_lower,
+
+      // Institutional Flow
+      large_volume_spike,
+      volume_delta,
+      accumulation_detected,
+      distribution_detected,
+      smart_money_direction,
+
+      // ICT Institutional Features
+      ote_in_zone,
+      ote_zone_direction,
+      displacement_detected,
+      displacement_direction,
+      displacement_strength,
+      liquidity_grab_detected,
+      liquidity_grab_type,
+      liquidity_grab_volume_spike,
+      judas_swing_detected,
+      judas_swing_direction,
+      judas_swing_complete,
+      killzone_active,
+      killzone_name,
+      market_structure_trend,
+      bos_detected,
+      choch_detected,
+      in_discount,
+      in_premium,
+      ob_in_ote,
+      fvg_in_ote,
+      efficiency_ratio,
+      is_trending_market,
+      ict_entry_score,
+      ict_entry_valid,
+      htf_cascade_aligned,
+      htf_cascade_score,
+      checklist_pass_rate,
+      checklist_grade
     };
   }
   

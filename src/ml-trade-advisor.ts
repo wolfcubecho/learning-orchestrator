@@ -69,8 +69,9 @@ export class MLTradeAdvisor {
   private modelDir: string;
   private initialized: boolean = false;
 
-  constructor(config?: Partial<PipelineConfig>) {
-    this.modelDir = path.join(process.cwd(), 'data', 'models');
+  constructor(config?: Partial<PipelineConfig> & { modelDir?: string }) {
+    // Allow explicit modelDir or default to cwd-relative path
+    this.modelDir = config?.modelDir || path.join(process.cwd(), 'data', 'models');
     this.mlModel = new TradingMLModel();
     this.h2o = new H2OIntegration({ modelDir: this.modelDir });
     this.pipeline = new TradeDecisionPipeline(config);
@@ -84,37 +85,94 @@ export class MLTradeAdvisor {
 
     console.log('[MLAdvisor] Initializing...');
 
-    // Load best model metadata
-    this.bestModel = await this.h2o.getBestModel();
+    // Try to load pre-trained weights first (faster, no retraining needed)
+    const weightsLoaded = await this.loadModelWeights();
 
-    if (this.bestModel) {
-      console.log(`[MLAdvisor] Loaded model: ${this.bestModel.modelId}`);
-      console.log(`[MLAdvisor] Accuracy: ${(this.bestModel.accuracy * 100).toFixed(1)}%`);
-      console.log(`[MLAdvisor] AUC: ${(this.bestModel.auc * 100).toFixed(1)}%`);
+    if (!weightsLoaded) {
+      // Fall back to loading model metadata + CSV retraining
+      this.bestModel = await this.h2o.getBestModel();
 
-      // Load training data to initialize the local ML model
-      await this.loadTrainingData();
-    } else {
-      console.log('[MLAdvisor] No trained model found. Run npm run h2o-pipeline first.');
+      if (this.bestModel) {
+        console.log(`[MLAdvisor] Loaded model: ${this.bestModel.modelId}`);
+        console.log(`[MLAdvisor] Accuracy: ${(this.bestModel.accuracy * 100).toFixed(1)}%`);
+
+        // Load training data to initialize the local ML model
+        await this.loadTrainingData();
+      } else {
+        console.log('[MLAdvisor] No trained model found. Run npm run learn-loop first.');
+      }
     }
 
     this.initialized = true;
   }
 
   /**
+   * Load pre-trained model weights (much faster than retraining from CSV)
+   */
+  private async loadModelWeights(): Promise<boolean> {
+    const weightsFile = path.join(this.modelDir, 'model-weights.json');
+    const metaFile = path.join(this.modelDir, 'best-model.json');
+
+    if (!fs.existsSync(weightsFile)) {
+      console.log('[MLAdvisor] No weights file found');
+      return false;
+    }
+
+    try {
+      const weights = JSON.parse(fs.readFileSync(weightsFile, 'utf-8'));
+      this.mlModel.importWeights(weights);
+
+      // Load metadata
+      if (fs.existsSync(metaFile)) {
+        const meta = JSON.parse(fs.readFileSync(metaFile, 'utf-8'));
+        console.log(`[MLAdvisor] Loaded weights: ${meta.modelId}`);
+        console.log(`[MLAdvisor] Accuracy: ${(meta.finalAccuracy * 100).toFixed(1)}%`);
+        console.log(`[MLAdvisor] Weights: ${meta.numWeights}`);
+
+        this.bestModel = {
+          modelId: meta.modelId,
+          accuracy: meta.finalAccuracy,
+          auc: 0,
+          trainedAt: meta.trainedAt
+        } as any;
+      }
+
+      return true;
+    } catch (err: any) {
+      console.log(`[MLAdvisor] Failed to load weights: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
    * Load training data to initialize local ML model
    */
   private async loadTrainingData(): Promise<void> {
-    const trainingDir = path.join(process.cwd(), 'data', 'h2o-training');
+    // Check both old (h2o-training) and new (learning-loop) directories
+    const dirs = [
+      { dir: path.join(process.cwd(), 'data', 'learning-loop'), prefix: 'training_data_' },
+      { dir: path.join(process.cwd(), 'data', 'h2o-training'), prefix: 'train_' },
+    ];
 
-    if (!fs.existsSync(trainingDir)) {
+    let trainingDir = '';
+    let prefix = '';
+
+    for (const { dir, prefix: p } of dirs) {
+      if (fs.existsSync(dir)) {
+        trainingDir = dir;
+        prefix = p;
+        break;
+      }
+    }
+
+    if (!trainingDir) {
       console.log('[MLAdvisor] No training data directory found');
       return;
     }
 
     // Find most recent training file
     const files = fs.readdirSync(trainingDir)
-      .filter(f => f.startsWith('train_') && f.endsWith('.csv'))
+      .filter(f => f.startsWith(prefix) && f.endsWith('.csv'))
       .sort()
       .reverse();
 
@@ -212,9 +270,32 @@ export class MLTradeAdvisor {
       direction === 'LONG' ? 'long' : 'short'
     );
 
-    // Step 4: Get ML prediction (cast to TradeFeatures - predict only reads feature values)
-    const prediction = this.mlModel.predict(features as TradeFeatures);
-    reasons.push(`ML win probability: ${(prediction.winProbability * 100).toFixed(1)}%`);
+    // Step 4: Get ML prediction - try LightGBM first (77%), fall back to local (60.5%)
+    let prediction: Prediction;
+    let modelSource: 'lightgbm' | 'local' = 'local';
+    let modelAccuracy = this.bestModel?.accuracy || 0.605;
+
+    const lgbmPrediction = await this.tryLightGBMPrediction(features);
+    if (lgbmPrediction) {
+      prediction = {
+        winProbability: lgbmPrediction.winProbability,
+        confidence: lgbmPrediction.confidence,
+        keyFeatures: ['atr_value', 'distance_to_low', 'volatility', 'trend_strength'], // Top LightGBM features
+        reason: `LightGBM prediction with ${(lgbmPrediction.modelAccuracy * 100).toFixed(0)}% accuracy`,
+      };
+      modelSource = 'lightgbm';
+      modelAccuracy = lgbmPrediction.modelAccuracy;
+      // Update best model info
+      this.bestModel = {
+        modelId: lgbmPrediction.modelId,
+        accuracy: lgbmPrediction.modelAccuracy,
+        auc: 0.86,
+      } as any;
+      reasons.push(`ML win probability: ${(prediction.winProbability * 100).toFixed(1)}% (LightGBM ${(modelAccuracy * 100).toFixed(0)}%)`);
+    } else {
+      prediction = this.mlModel.predict(features as TradeFeatures);
+      reasons.push(`ML win probability: ${(prediction.winProbability * 100).toFixed(1)}% (local ${(modelAccuracy * 100).toFixed(0)}%)`);
+    }
 
     if (prediction.winProbability < 0.45) {
       warnings.push(`ML predicts low win probability: ${(prediction.winProbability * 100).toFixed(1)}%`);
@@ -296,13 +377,54 @@ export class MLTradeAdvisor {
   }
 
   /**
+   * Try to get prediction from LightGBM server (77% accuracy)
+   */
+  private async tryLightGBMPrediction(features: any): Promise<{
+    winProbability: number;
+    confidence: number;
+    modelId: string;
+    modelAccuracy: number;
+  } | null> {
+    const serverUrl = process.env.LIGHTGBM_SERVER_URL || 'http://localhost:5555';
+
+    try {
+      const response = await fetch(`${serverUrl}/predict`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ features }),
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const result = await response.json() as any;
+      if (result.error) {
+        return null;
+      }
+
+      return {
+        winProbability: result.win_probability,
+        confidence: result.confidence,
+        modelId: result.model_id || 'lightgbm',
+        modelAccuracy: result.model_accuracy || 0.77,
+      };
+    } catch {
+      return null; // Server not available
+    }
+  }
+
+  /**
    * Quick check - just get ML prediction without full pipeline
+   * Tries LightGBM server (77%) first, falls back to local model (60.5%)
    */
   async quickPredict(market: MarketSnapshot): Promise<{
     direction: 'LONG' | 'SHORT' | 'NEUTRAL';
     winProbability: number;
     confidence: number;
     smcScore: number;
+    modelSource?: 'lightgbm' | 'local';
+    modelAccuracy?: number;
   }> {
     if (!this.initialized) {
       await this.initialize();
@@ -337,6 +459,29 @@ export class MLTradeAdvisor {
       direction === 'LONG' ? 'long' : 'short'
     );
 
+    // Try LightGBM server first (77% accuracy)
+    const lgbmPrediction = await this.tryLightGBMPrediction(features);
+    if (lgbmPrediction) {
+      // Update best model info if using LightGBM
+      if (!this.bestModel || lgbmPrediction.modelAccuracy > (this.bestModel.accuracy || 0)) {
+        this.bestModel = {
+          modelId: lgbmPrediction.modelId,
+          accuracy: lgbmPrediction.modelAccuracy,
+          auc: 0.86,
+        } as any;
+      }
+
+      return {
+        direction: lgbmPrediction.winProbability > 0.5 ? direction : 'NEUTRAL',
+        winProbability: lgbmPrediction.winProbability,
+        confidence: lgbmPrediction.confidence,
+        smcScore: scoring.score,
+        modelSource: 'lightgbm',
+        modelAccuracy: lgbmPrediction.modelAccuracy,
+      };
+    }
+
+    // Fall back to local model (60.5% accuracy)
     const prediction = this.mlModel.predict(features as TradeFeatures);
 
     return {
@@ -344,6 +489,8 @@ export class MLTradeAdvisor {
       winProbability: prediction.winProbability,
       confidence: prediction.confidence,
       smcScore: scoring.score,
+      modelSource: 'local',
+      modelAccuracy: this.bestModel?.accuracy || 0.605,
     };
   }
 

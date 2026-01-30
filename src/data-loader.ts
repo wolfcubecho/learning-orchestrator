@@ -199,13 +199,13 @@ export class LocalDataLoader {
   getAvailableData(): { symbols: string[]; intervals: string[] } {
     const symbols = new Set<string>();
     const intervals = new Set<string>();
-    
+
     // Check directory structure
     const dataDir = this.dataPath;
-    
+
     if (fs.existsSync(dataDir)) {
       const files = fs.readdirSync(dataDir);
-      
+
       files.forEach(file => {
         if (file.endsWith('.csv')) {
           // Parse filename to extract symbol and interval
@@ -217,10 +217,130 @@ export class LocalDataLoader {
         }
       });
     }
-    
+
     return {
       symbols: Array.from(symbols),
       intervals: Array.from(intervals)
+    };
+  }
+
+  /**
+   * Fetch recent candles from Binance API
+   * @param symbol Trading pair (e.g., BTCUSDT)
+   * @param interval Timeframe (1m, 5m, 1h, 4h, 1d)
+   * @param days Number of days to fetch (default 30)
+   */
+  async fetchRecentFromBinance(symbol: string, interval: string, days: number = 30): Promise<Candle[]> {
+    const intervalMs: Record<string, number> = {
+      '1m': 60 * 1000,
+      '5m': 5 * 60 * 1000,
+      '15m': 15 * 60 * 1000,
+      '1h': 60 * 60 * 1000,
+      '4h': 4 * 60 * 60 * 1000,
+      '1d': 24 * 60 * 60 * 1000
+    };
+
+    const msPerCandle = intervalMs[interval] || intervalMs['1h'];
+    const endTime = Date.now();
+    const startTime = endTime - (days * 24 * 60 * 60 * 1000);
+    const candlesNeeded = Math.ceil((endTime - startTime) / msPerCandle);
+
+    console.log(`  Fetching ${candlesNeeded} ${interval} candles from Binance for ${symbol}...`);
+
+    const allCandles: Candle[] = [];
+    let currentStart = startTime;
+    const limit = 1000;  // Binance max per request
+
+    try {
+      while (currentStart < endTime) {
+        const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&startTime=${currentStart}&limit=${limit}`;
+
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Binance API error: ${response.status}`);
+        }
+
+        const data = await response.json() as any[];
+
+        if (data.length === 0) break;
+
+        for (const k of data) {
+          allCandles.push({
+            timestamp: k[0],
+            open: parseFloat(k[1]),
+            high: parseFloat(k[2]),
+            low: parseFloat(k[3]),
+            close: parseFloat(k[4]),
+            volume: parseFloat(k[5])
+          });
+        }
+
+        // Move to next batch
+        currentStart = data[data.length - 1][0] + msPerCandle;
+
+        // Rate limiting - be nice to Binance
+        await new Promise(r => setTimeout(r, 100));
+      }
+
+      console.log(`  Fetched ${allCandles.length} recent candles from Binance`);
+      return allCandles;
+
+    } catch (error: any) {
+      console.error(`  Failed to fetch from Binance: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Load data with optional Binance recent data merge
+   * Combines historical files with fresh API data
+   */
+  async loadWithRecentData(
+    symbol: string,
+    interval: string,
+    recentDays: number = 30
+  ): Promise<DataLoadResult> {
+    // Load historical data first
+    const historical = await this.loadData(symbol, interval);
+
+    // Fetch recent from Binance
+    const recent = await this.fetchRecentFromBinance(symbol, interval, recentDays);
+
+    if (recent.length === 0) {
+      return historical;
+    }
+
+    // Merge: historical + recent (deduplicate by timestamp)
+    const seen = new Set<number>();
+    const merged: Candle[] = [];
+
+    // Add historical first
+    for (const c of historical.candles) {
+      if (!seen.has(c.timestamp)) {
+        seen.add(c.timestamp);
+        merged.push(c);
+      }
+    }
+
+    // Add recent (will override/append)
+    for (const c of recent) {
+      if (!seen.has(c.timestamp)) {
+        seen.add(c.timestamp);
+        merged.push(c);
+      }
+    }
+
+    // Sort by timestamp
+    merged.sort((a, b) => a.timestamp - b.timestamp);
+
+    console.log(`  Merged: ${historical.candles.length} historical + ${recent.length} recent = ${merged.length} total`);
+
+    return {
+      symbol,
+      interval,
+      candles: merged,
+      loaded: merged.length,
+      total: merged.length
     };
   }
 }
