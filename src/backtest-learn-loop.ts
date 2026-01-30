@@ -32,7 +32,7 @@ const CONFIG = {
     'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT',
     'XRPUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT', 'LINKUSDT'
   ],
-  timeframes: ['1d', '1h'],  // Both daily and hourly for comprehensive training
+  timeframes: ['1d', '1h', '5m'],  // Daily, hourly, and 5-minute for comprehensive training
 
   // LOW min score to capture both good AND bad trades
   // We want losers in the dataset so ML can learn what to avoid
